@@ -1,0 +1,44 @@
+# Created by .ignore support plugin (hsz.mobi)
+*.iml
+.idea/
+*.iws
+/out/
+target/
+node_modules/
+### Java template
+# Compiled class file
+*.class
+
+#eclipse
+.project
+.settings/
+.classpath
+
+# Log file
+*.log
+# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+hs_err_pid*
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# Intellij
+.idea/
+*.iml
+*.iws
+
+# Mac
+.DS_Store
+
+# Maven
+log/
+target/
+
+# Visual Studio
+bin/
+obj/
+.vs/
+Release/
+
