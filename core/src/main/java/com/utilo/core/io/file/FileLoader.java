@@ -1,15 +1,13 @@
 package com.utilo.core.io.file;
 
-import org.apache.commons.io.IOUtils;
+import com.utilo.core.exception.IllegalParameterException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -19,169 +17,138 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 
 public class FileLoader {
-	private final Logger                logger              = LoggerFactory.getLogger(FileLoader.class);
-	protected     Map<String, FileInfo> filePathsToFileInfo = null;
-	protected     List<String>          filePaths;
-	public FileLoader() {
+    private final Logger logger = LoggerFactory.getLogger(FileLoader.class);
+    protected Map<String, FileInfo> filePathsToFileInfo = null;
+    private List<String> filePaths;
+    private Path parentPath;
 
-	}
+    /**
+     * @param parentPath give null if you are giving absolute paths for the files.
+     *                   otherwise if you are giving root folder/jar where the files are located,
+     *                   set filePaths to relative paths of the files.
+     * @param filePaths  give path which files should be loaded @{@link FileLoader}
+     */
+    public FileLoader(Path parentPath, List<String> filePaths) {
+        this.parentPath = parentPath;
+        this.filePaths = new ArrayList<>(filePaths);
+    }
 
-	public FileLoader(String absolutePath) {
-		filePaths = new ArrayList<>();
-		filePaths.add(absolutePath);
-	}
+    protected boolean isRelativePath(String path) {
+        return !path.contains("/") && !path.contains("\\");
+    }
 
-	public FileLoader(List<String> absolutePaths) {
-		filePaths = absolutePaths;
-	}
+    protected void resolveParentPath() throws IOException {
+        if (filePaths.size() > 0 && parentPath == null) {
+            if (isRelativePath(filePaths.get(0))) {
+                /*
+                  will open a fileSystem if parentPath is a jar file and we are not closing it to resolve file paths!(@parentPath.resolve)
+                 */
+                parentPath = ResourceUtil.getParentPathForResource(filePaths.get(0));
+                String parentAbsolutePath = parentPath.toString();
+                if (parentPath.toUri().getScheme().equals("jar"))
+                    parentAbsolutePath = parentPath.getFileSystem().toString();
+                logger.warn("FileLoader did not find any file separator in the filePath. So will search resources in :" + parentAbsolutePath);
+            }
+        }
+    }
 
-	public synchronized void loadFiles() throws IOException {
-		try {
-			Map<String, FileInfo> filePathsToFileInfo = new ConcurrentHashMap<>();
-			String fileRelativeOrAbsolutePath;
+    protected void validate() throws IllegalParameterException {
+        boolean isRelative = parentPath != null;
+        boolean isAbsolute = false;
+        for (int i = 0; i < filePaths.size(); i++) {
+            boolean relativePath = isRelativePath(filePaths.get(i));
+            if (relativePath) {
+                if (isAbsolute) {
+                    throw new IllegalParameterException("There are both of absolute and relative paths. Relative path:" + filePaths.get(i) +
+                            " You can not use both of absolute and relative paths in the same " + this.getClass());
+                } else {
+                    isRelative = true;
+                }
+            } else {
+                if (isRelative) {
+                    throw new IllegalParameterException("parentPath is set or a relativePath exists,but there is an absolute path: " +
+                            filePaths.get(i) + " you can not use both of absolute and relative paths in the same " + this.getClass());
+                } else {
+                    isAbsolute = true;
+                }
+            }
+        }
+    }
 
-			logger.info("loading files started");
-			for (int i = 0; i < filePaths.size(); i++) {
-				fileRelativeOrAbsolutePath = filePaths.get(i);
-				FileInfo fileInfo = new FileInfo(fileRelativeOrAbsolutePath);
-				byte[] fileContents = loadFile(fileInfo);
-				fileInfo.setFileContents(fileContents);
-				filePathsToFileInfo.put(fileRelativeOrAbsolutePath, fileInfo);
-			}
+    public synchronized void loadFiles() throws IOException {
+        try {
+            Map<String, FileInfo> filePathsToFileInfo = new ConcurrentHashMap<>();
+            String path;
 
-			this.filePathsToFileInfo = filePathsToFileInfo;
-			logger.info("loading files finished");
-		} catch (Exception e) {
-			throw new IOException("Can't load files:" + Arrays.toString(filePaths.toArray()), e);
-		}
-	}
+            logger.info("loading files started");
+            resolveParentPath();
+            validate();
+            for (int i = 0; i < filePaths.size(); i++) {
+                path = filePaths.get(i);
+                FileInfo fileInfo = new FileInfo(path);
+                byte[] fileContents = loadFile(fileInfo);
+                fileInfo.setFileContents(fileContents);
+                filePathsToFileInfo.put(path, fileInfo);
+            }
 
-	public class FileInfo {
-		protected String fileAbsolutePath;
-		protected Path   filePath;
-		//Decided this to be a byte array as if it was input stream, we will
-		//give responsibility of closing the input stream to the client.
-		protected byte[] fileContents;
+            this.filePathsToFileInfo = filePathsToFileInfo;
+            logger.info("loading files finished");
+        } catch (Exception e) {
+            throw new IOException("Can't load files:" + Arrays.toString(filePaths.toArray()), e);
+        }
+    }
 
-		public FileInfo(String fileAbsolutePath) {
-			this.fileAbsolutePath = fileAbsolutePath;
-		}
-
-		public String getFileAbsolutePath() {
-			return fileAbsolutePath;
-		}
-
-		public Path getFilePath() {
-			return filePath;
-		}
-
-		public void setFilePath(Path filePath) {
-			this.filePath = filePath;
-		}
-
-		public void setFileContents(byte[] fileContents) {
-			this.fileContents = fileContents;
-		}
-
-		public byte[] getFileContents() {
-			return fileContents;
-		}
-	}
-
-	protected InputStream getTheFile(FileInfo fileInfo) throws FileNotFoundException {
-		InputStream inputStream = null;
-
-		logger.debug("Looking for the file:" + fileInfo.getFileAbsolutePath() +
-				" at absolutePath");
-		File file = new File(fileInfo.getFileAbsolutePath());
-		if (file.exists()) {
-			fileInfo.setFilePath(file.toPath());
-			inputStream = new FileInputStream(file);
-		} else {
-			throw new FileNotFoundException("Can't find the file at absolutePath:" + fileInfo.getFileAbsolutePath());
-		}
-
-		return inputStream;
-	}
-
-	/*protected InputStream getTheFileFromProgramExecutionClassPath(FileInfo fileInfo) throws FileNotFoundException {
-		InputStream inputStream;
-		try {
-			logger.debug("Looking for the file:" + fileInfo.getFileAbsolutePath() + " at classpath");
-			logger.debug("Program execution classpath:" + Thread.currentThread().getContextClassLoader().getResource(""));
-			inputStream = Thread.currentThread().getContextClassLoader().getResourceAsStream(fileInfo.getFileAbsolutePath());
-		} catch (Exception e) {
-			throw new FileNotFoundException("Can't find the file at program execution classpath:" + fileInfo.getFileAbsolutePath());
-		}
-
-		if (inputStream != null) {
-			URL url = Thread.currentThread().getContextClassLoader().getResource(fileInfo.getFileAbsolutePath());
-			if (url != null) {
-				try {
-					fileInfo.setFilePath(Paths.get(url.toURI()));
-				} catch (URISyntaxException e) {
-					//ignore
-				}
-			}
-		}
-
-		return inputStream;
-	}*/
-
-	protected byte[] loadFile(FileInfo fileInfo) throws FileNotFoundException {
-		InputStream inputStream = null;
-		byte[] fileContents = null;
-		Exception causeException = null;
-
-		try {
-			inputStream = getTheFile(fileInfo);
-		} catch (Exception e) {
-			causeException = e;
-		}
-
-		try {
-			/*if (inputStream == null && lookFileAtClasspath) {
-				inputStream = getTheFileFromProgramExecutionClassPath(fileInfo);
-			}*/
-
-		} catch (Exception e) {
-			causeException = e;
-			inputStream = null;
-		}
-
-		try {
-			if (inputStream != null) {
-				fileContents = IOUtils.toByteArray(inputStream);
-			} else {
-				causeException = new StreamCorruptedException("Can't read the inputStream for the file:" + fileInfo.getFileAbsolutePath());
-			}
-		} catch (Exception e) {
-			causeException = e;
-		}
-
-		IOUtils.closeQuietly(inputStream);
-
-		if (fileContents == null) {
-			FileNotFoundException fileEx = new FileNotFoundException("Can't read the file:" + fileInfo.getFileAbsolutePath());
-			fileEx.initCause(causeException);
-			throw fileEx;
-		}
-
-		return fileContents;
-	}
+    public Path getParentPath() {
+        return parentPath;
+    }
 
 
-	/**
-	 * If it is not set FileLoader will only search the file  at execution path.
-	 * it is recommended to set true for project resource files
-	 *
-	 * @/param lookFileAtClasspath
+    public class FileInfo {
+        protected String fileReferencePath;
+        protected Path filePath;
+        //Decided this to be a byte array as if it was input stream, we will
+        //give responsibility of closing the input stream to the client.
+        protected byte[] fileContents;
 
-	public void setLookFileAtClasspath(boolean lookFileAtClasspath) {
-		this.lookFileAtClasspath = lookFileAtClasspath;
-	}*/
+        public FileInfo(String fileReferencePath) {
+            this.fileReferencePath = fileReferencePath;
+        }
 
-	public Map<String, FileInfo> getFilePathsToFileInfo() {
-		return filePathsToFileInfo;
-	}
+        public String getFileReferencePath() {
+            return fileReferencePath;
+        }
+
+        public Path getFilePath() {
+            return filePath;
+        }
+
+        public void setFilePath(Path filePath) {
+            this.filePath = filePath;
+        }
+
+        public void setFileContents(byte[] fileContents) {
+            this.fileContents = fileContents;
+        }
+
+        public byte[] getFileContents() {
+            return fileContents;
+        }
+    }
+
+    protected byte[] loadFile(FileInfo fileInfo) throws IOException {
+        StringBuilder message = new StringBuilder();
+        try {
+            if (parentPath != null) {
+                message.append(parentPath).append(File.separator);
+                fileInfo.setFilePath(parentPath.resolve(fileInfo.getFileReferencePath()));
+            }
+            return Files.readAllBytes(fileInfo.getFilePath());
+        } catch (Exception e) {
+            throw new IOException("Can not read file:" +message.append(fileInfo.getFileReferencePath()), e);
+        }
+    }
+
+    public Map<String, FileInfo> getFilePathsToFileInfo() {
+        return filePathsToFileInfo;
+    }
 }
